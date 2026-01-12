@@ -1,0 +1,5 @@
+rootProject.name='unDRMapp'
+include ':app'
+
+include 'mBookDrmLib'
+project(':mBookDrmLib').projectDir = new File('../../Library2/CommonLib/mBookDrmLib')
