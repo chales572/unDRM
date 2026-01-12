@@ -8,90 +8,114 @@ import android.os.AsyncTask
 import android.os.Bundle
 import android.os.Environment
 import android.text.TextUtils
+import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
 import com.wjthinkbig.bookclubdrm.DrmDecode
 import com.wjthinkbig.bookclubdrm.common.LOCAL_PATH
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
-
-    init {
-        val mExecDrm: DrmDecode? = null
-        val mContext:Context? = null
+    companion object {
+        const val TAG = "UnDRM"
     }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        mContext = this.applicationContext
         setContentView(R.layout.activity_main)
+
+        val targetPath = intent.getStringExtra("target_path")
+        if (!TextUtils.isEmpty(targetPath)) {
+            Log.d(TAG, "Received target path: $targetPath")
+            val file = File(targetPath)
+            if (file.exists()) {
+                val mediaWrapper = MediaWrapper(Uri.fromFile(file))
+                // Try to set other required fields if possible, or rely on defaults in DrmDecodeTask
+                DrmDecodeTask().execute(mediaWrapper)
+            } else {
+                Log.e(TAG, "File does not exist: $targetPath")
+                finish()
+            }
+        } else {
+             // Default behavior or UI for manual selection logic (omitted for now)
+             Log.d(TAG, "No target_path provided, waiting for user interaction or manual run.")
+        }
     }
 
-    private fun requestDrmDecode() {
-        val mw: MediaWrapper = getCurrentMediaWrapper()
-        com.wjthinkbig.mvideo2.VideoPlayerActivity.DrmDecodeTask().execute(mw)
-    }
-    private class DrmDecodeTask : AsyncTask<MediaWrapper?, Void?, MediaWrapper?>() {
-        protected override fun doInBackground(vararg params: MediaWrapper): MediaWrapper? {
+    // Need to expose this for the inner class or pass it in.
+    // However, DrmDecodeTask is static-like (inner class) but used instance methods.
+    // Let's make it an inner class that can access 'this' if needed, or pass Context.
+    private inner class DrmDecodeTask : AsyncTask<MediaWrapper?, Void?, MediaWrapper?>() {
+        override fun doInBackground(vararg params: MediaWrapper): MediaWrapper? {
             val media = params[0]
-            var devKey: String = DeviceInfo.getDeviceIDForDRM()
+            var devKey: String = DeviceInfo.getDeviceIDForDRM(applicationContext) // Pass context if needed
             val pref: SharedPreferences = getSharedPreferences("video", Activity.MODE_PRIVATE)
-            if (devKey != null) {
-                val editor = pref.edit()
-                editor.putString("devkey", devKey)
-                editor.commit()
+            
+            // Simplified logic for devKey
+            if (TextUtils.isEmpty(devKey)) {
+                 devKey = pref.getString("devkey", "dev_key12345") ?: "dev_key12345"
             } else {
-                devKey = pref.getString("devkey", "dev_key12345")
+                 pref.edit().putString("devkey", devKey).apply()
             }
-            //String orderID = "5951c35abb901dc254c437b4fdd238ed";
+
             var orderID = media.orderID
             if (TextUtils.isEmpty(orderID)) orderID = "woongjin!drm@anypass#"
-            //LogWrapper.d(TAG, "orderID=" + orderID);
+            
+            // Ensure local path directories exist
             LOCAL_PATH.makeSureFileExistsAndDrmKind(LOCAL_PATH.DRM_KIND.KIND_VID)
-            //drmDestroy()
-            mExecDrm
-            var mExecDrm = DrmDecode(devKey, MainActivity.mConInfo.MEMBER_CODE, orderID)
-            val drmResponse: DrmDecode.DrmResponse = mExecDrm.decodeFile(media.uri.toString().trim())
-            //LogWrapper.d(TAG, "DrmDecodeTask 2. drm devKey : " + devKey + "  mConInfo.MEMBER_CODE : " + mConInfo.MEMBER_CODE  + " orderID : " + orderID);
+
+            // DrmDecode instantiation
+            // Note: The original code accessed mConInfo.MEMBER_CODE from MainActivity, which wasn't defined.
+            // We'll use a dummy or "anypass" member code as per user context or defaults.
+            val memberCode = "dummy_member" 
+            
+            val mExecDrm = DrmDecode(applicationContext, devKey, memberCode, orderID)
+            val drmResponse: DrmDecode.DrmResponse? = mExecDrm.decodeFile(media.uri.path)
+
             if (drmResponse != null) {
-                LogWrapper.d(com.wjthinkbig.mvideo2.VideoPlayerActivity.TAG, "DrmDecodeTask drmResponse.errorCode : " + drmResponse.errorCode)
+                Log.d(TAG, "DrmDecodeTask drmResponse.errorCode : " + drmResponse.errorCode)
+                 if (drmResponse.errorCode == "00000000") {
+                    // Success
+                    Log.d(TAG, "Decryption Successful: " + drmResponse.sFullPath)
+                    media.uriDRM = Uri.parse(drmResponse.sFullPath)
+                    media.isDRMDone = true
+                } else {
+                    Log.e(TAG, "Decryption Failed with error code: ${drmResponse.errorCode}")
+                    media.isDRMDone = false
+                }
             } else {
-                LogWrapper.d(com.wjthinkbig.mvideo2.VideoPlayerActivity.TAG, "DrmDecodeTask drmResponse == null")
+                Log.e(TAG, "DrmDecodeTask drmResponse == null")
                 return null
             }
-            if (drmResponse.errorCode.equals("00000000")) {
-                var uriDRM = Uri.parse(drmResponse.sFullPath)
-                if (media.uri.toString().startsWith(Environment.getExternalStorageDirectory().absolutePath)
-                        || (SDcardUtils.getRemovableStorageDirectory(this@VideoPlayerActivity) != null
-                                && media.uri.toString().startsWith(SDcardUtils.getRemovableStorageDirectory(this@VideoPlayerActivity).getAbsolutePath()))) { //media.getUri() = Uri.parse("file://" + media.getUri().toString());
-                    LogWrapper.d(com.wjthinkbig.mvideo2.VideoPlayerActivity.TAG, "should be... -> media.getUri()=" + "file://" + media.uri.toString())
-                    uriDRM = Uri.parse("file://$uriDRM")
-                }
-                media.uriDRM = uriDRM
-                media.isDRMDone = true
-            } else {
-                media.isDRMDone = false
-            }
+            
+            // Cleanup DRM manager if needed
+            mExecDrm.closeDrmManager()
+            
             return media
         }
 
         override fun onPostExecute(mw: MediaWrapper?) {
             super.onPostExecute(mw)
-            mIsDrmDecoding = false
-            drmDecodeComplete(mw)
+            if (mw != null && mw.isDRMDone) {
+                Log.d(TAG, "DONE: File decrypted successfully.")
+                // Create a signal file for the PC script
+                try {
+                     File("/sdcard/undrm_done.txt").createNewFile()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            } else {
+                Log.e(TAG, "DONE: Decryption failed.")
+                try {
+                     File("/sdcard/undrm_fail.txt").createNewFile()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            // Close the app independently of success/fail to return control
+            finish()
         }
     }
-
-    private fun drmDestroy() {
-        LogWrapper.d(
-            com.wjthinkbig.mvideo2.VideoPlayerActivity.TAG,
-            "VideoPlayerActivity drmDestroy mExecDrm=$mExecDrm"
-        )
-        if (mExecDrm != null) {
-            mExecDrm.closeDrmManager()
-
-            mExecDrm = null
-        }
-    }
-
 }
 
 
