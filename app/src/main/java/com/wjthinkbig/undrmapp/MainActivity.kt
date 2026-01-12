@@ -1,8 +1,10 @@
 package com.wjthinkbig.undrmapp
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.AsyncTask
 import android.os.Bundle
@@ -10,6 +12,8 @@ import android.os.Environment
 import android.text.TextUtils
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.wjthinkbig.bookclubdrm.DrmDecode
 import com.wjthinkbig.bookclubdrm.common.LOCAL_PATH
 import java.io.File
@@ -18,7 +22,10 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val TAG = "UnDRM"
+        const val PERMISSION_REQUEST_CODE = 100
     }
+
+    private var pendingTargetPath: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,14 +34,13 @@ class MainActivity : AppCompatActivity() {
         val targetPath = intent.getStringExtra("target_path")
         if (!TextUtils.isEmpty(targetPath)) {
             Log.d(TAG, "Received target path: $targetPath")
-            val file = File(targetPath)
-            if (file.exists()) {
-                val mediaWrapper = MediaWrapper(Uri.fromFile(file))
-                // Try to set other required fields if possible, or rely on defaults in DrmDecodeTask
-                DrmDecodeTask().execute(mediaWrapper)
+            pendingTargetPath = targetPath
+
+            // Check and request permissions
+            if (checkPermissions()) {
+                processDrmFile(targetPath!!)
             } else {
-                Log.e(TAG, "File does not exist: $targetPath")
-                finish()
+                requestPermissions()
             }
         } else {
              // Default behavior or UI for manual selection logic (omitted for now)
@@ -42,12 +48,65 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun checkPermissions(): Boolean {
+        val readPermission = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.READ_EXTERNAL_STORAGE
+        )
+        val writePermission = ContextCompat.checkSelfPermission(
+            this, Manifest.permission.WRITE_EXTERNAL_STORAGE
+        )
+        return readPermission == PackageManager.PERMISSION_GRANTED &&
+                writePermission == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ),
+            PERMISSION_REQUEST_CODE
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() &&
+                grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                Log.d(TAG, "Permissions granted")
+                pendingTargetPath?.let { processDrmFile(it) }
+            } else {
+                Log.e(TAG, "Permissions denied")
+                finish()
+            }
+        }
+    }
+
+    private fun processDrmFile(targetPath: String) {
+        val file = File(targetPath)
+        if (file.exists()) {
+            val mediaWrapper = MediaWrapper(Uri.fromFile(file))
+            // Try to set other required fields if possible, or rely on defaults in DrmDecodeTask
+            DrmDecodeTask().execute(mediaWrapper)
+        } else {
+            Log.e(TAG, "File does not exist: $targetPath")
+            finish()
+        }
+    }
+
     // Need to expose this for the inner class or pass it in.
     // However, DrmDecodeTask is static-like (inner class) but used instance methods.
     // Let's make it an inner class that can access 'this' if needed, or pass Context.
     private inner class DrmDecodeTask : AsyncTask<MediaWrapper?, Void?, MediaWrapper?>() {
-        override fun doInBackground(vararg params: MediaWrapper): MediaWrapper? {
-            val media = params[0]
+        override fun doInBackground(vararg params: MediaWrapper?): MediaWrapper? {
+            val media = params[0] ?: return null
             var devKey: String = DeviceInfo.getDeviceIDForDRM(applicationContext) // Pass context if needed
             val pref: SharedPreferences = getSharedPreferences("video", Activity.MODE_PRIVATE)
             
